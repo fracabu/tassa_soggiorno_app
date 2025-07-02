@@ -1,182 +1,274 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
 
-st.set_page_config(page_title="Tassa di soggiorno - Roma", page_icon="💶", layout="wide")
-st.title("💶 Calcolo Tassa di Soggiorno - Comune di Roma")
+# Configurazione della pagina
+st.set_page_config(
+    page_title="Calcolatore Tassa di Soggiorno",
+    page_icon="🏨",
+    layout="wide"
+)
 
-uploaded_file = st.file_uploader("📂 Carica il file di prenotazioni (.xls, .xlsx, .csv, .pdf)", type=["xls", "xlsx", "csv", "pdf"])
+# Titolo principale
+st.title("🏨 Calcolatore Tassa di Soggiorno - Roma")
+st.markdown("---")
 
-def calcola_tassa(df):
-    df = df[df["Stato"].str.strip().str.lower() == "ok"]
-    df = df[df["Nome ospite(i)"].notna()].copy()
+# Sidebar con configurazioni
+st.sidebar.header("⚙️ Configurazioni")
 
-    def tassa(row):
-        nome = str(row["Nome ospite(i)"]).lower()
-        if "nardiello" in nome:
-            return 0.0
-        notti = min(int(row["Durata (notti)"]), 10)
-        persone = int(row["Persone"])
-        return 6 * notti * persone
+# Tariffe tassa di soggiorno Roma (aggiornate 2024)
+tariffe_default = {
+    "Strutture ricettive alberghiere 5 stelle": 7.00,
+    "Strutture ricettive alberghiere 4 stelle": 6.00,
+    "Strutture ricettive alberghiere 3 stelle": 4.00,
+    "Strutture ricettive alberghiere 2 stelle": 3.00,
+    "Strutture ricettive alberghiere 1 stella": 2.00,
+    "Casa vacanze/Appartamento": 6.00,
+    "Bed & Breakfast": 2.00
+}
 
-    df["Tassa di soggiorno (€)"] = df.apply(tassa, axis=1)
-    df["Trimestre"] = pd.to_datetime(df["Arrivo"], errors="coerce").dt.month.map({
-        1: "Q1", 2: "Q1", 3: "Q1",
-        4: "Q2", 5: "Q2", 6: "Q2",
-        7: "Q3", 8: "Q3", 9: "Q3",
-        10: "Q4", 11: "Q4", 12: "Q4"
-    })
-    return df
+# Selezione tipo struttura
+tipo_struttura = st.sidebar.selectbox(
+    "Tipo di struttura:",
+    list(tariffe_default.keys()),
+    index=5  # Default: Casa vacanze/Appartamento
+)
 
-def mappa_colonne_pdf(df):
-    col = [str(c).strip().lower() for c in df.columns if c]
-    df.columns = col
-    mapping = {
-        "nome dell'ospite": "Nome ospite(i)",
-        "ospite": "Nome ospite(i)",
-        "guest name": "Nome ospite(i)",
-        "check in": "Arrivo",
-        "check-in": "Arrivo",
-        "check out": "Partenza",
-        "check-out": "Partenza",
-        "notti": "Durata (notti)",
-        "persone": "Persone",
-        "numero ospiti": "Persone",
-        "stato": "Stato"
-    }
-    rename = {k: v for k, v in mapping.items() if k in df.columns}
-    df.rename(columns=rename, inplace=True)
-    return df
+tariffa_per_notte = st.sidebar.number_input(
+    "Tariffa per notte per adulto (€):",
+    min_value=0.0,
+    max_value=20.0,
+    value=tariffe_default[tipo_struttura],
+    step=0.50
+)
 
-def genera_csv(df):
-    output = io.StringIO()
-    df.to_csv(output, index=False)
-    return output.getvalue()
+# Configurazioni aggiuntive
+max_notti_tassa = st.sidebar.number_input(
+    "Massimo notti soggette a tassa:",
+    min_value=1,
+    max_value=30,
+    value=10,
+    help="A Roma la tassa si applica massimo per 10 notti consecutive"
+)
 
-def genera_pdf(risultato_df, totale, tabella_trimestri):
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+eta_minima = st.sidebar.number_input(
+    "Età minima soggetta a tassa:",
+    min_value=0,
+    max_value=18,
+    value=10,
+    help="Bambini sotto questa età sono esenti"
+)
 
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(40, height - 40, "Riepilogo Tassa di Soggiorno - Comune di Roma")
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Nota**: Le tariffe mostrate sono quelle ufficiali del Comune di Roma aggiornate al 2024.")
 
-    y = height - 80
-    c.setFont("Helvetica", 12)
-    c.drawString(40, y, f"Totale da versare: {totale:.2f} €")
-    y -= 30
+# Funzione per parsare i dati dalle prenotazioni
+def parse_booking_data():
+    """Simula i dati delle prenotazioni dal PDF"""
+    bookings = [
+        {"nome": "Fabio Minella", "adulti": 2, "bambini": 0, "checkin": "2025-03-15", "checkout": "2025-03-16", "stato": "OK"},
+        {"nome": "Alessandra Nardiello", "adulti": 2, "bambini": 0, "checkin": "2025-04-17", "checkout": "2025-04-18", "stato": "OK"},
+        {"nome": "Giulia Cola", "adulti": 2, "bambini": 0, "checkin": "2025-04-18", "checkout": "2025-04-21", "stato": "Cancellata"},
+        {"nome": "Victoriia Nahorna", "adulti": 3, "bambini": 0, "checkin": "2025-04-19", "checkout": "2025-04-21", "stato": "OK"},
+        {"nome": "Alessia Raffaeli", "adulti": 2, "bambini": 1, "eta_bambini": [3], "checkin": "2025-04-25", "checkout": "2025-04-27", "stato": "Cancellata"},
+        {"nome": "Lars Haubner", "adulti": 1, "bambini": 0, "checkin": "2025-04-25", "checkout": "2025-04-27", "stato": "OK"},
+        {"nome": "Motlagh Zahra", "adulti": 1, "bambini": 0, "checkin": "2025-04-29", "checkout": "2025-05-05", "stato": "OK"},
+        {"nome": "Roberto Trifiletti", "adulti": 1, "bambini": 0, "checkin": "2025-05-07", "checkout": "2025-05-08", "stato": "OK"},
+        {"nome": "Mazzariol Claudia", "adulti": 2, "bambini": 0, "checkin": "2025-05-08", "checkout": "2025-05-09", "stato": "OK"},
+        {"nome": "Mirko Rossi", "adulti": 2, "bambini": 1, "eta_bambini": [7], "checkin": "2025-05-09", "checkout": "2025-05-11", "stato": "OK"},
+        {"nome": "Luca Rapis", "adulti": 2, "bambini": 0, "checkin": "2025-05-11", "checkout": "2025-05-15", "stato": "OK"},
+        {"nome": "Giorgio Lo Iacono", "adulti": 2, "bambini": 1, "eta_bambini": [1], "checkin": "2025-05-15", "checkout": "2025-05-18", "stato": "OK"},
+        {"nome": "Maya Robnett", "adulti": 1, "bambini": 0, "checkin": "2025-05-21", "checkout": "2025-05-27", "stato": "OK"},
+        {"nome": "Mathias Karine", "adulti": 2, "bambini": 0, "checkin": "2025-05-29", "checkout": "2025-06-03", "stato": "OK"},
+        {"nome": "Ciari Denise", "adulti": 2, "bambini": 0, "checkin": "2025-06-07", "checkout": "2025-06-08", "stato": "OK"},
+        {"nome": "Alexis Zuguem", "adulti": 1, "bambini": 0, "checkin": "2025-06-09", "checkout": "2025-06-12", "stato": "Mancata presentazione"},
+        {"nome": "Frigerio Laura", "adulti": 2, "bambini": 1, "eta_bambini": [13], "checkin": "2025-06-14", "checkout": "2025-06-15", "stato": "OK"},
+        {"nome": "Cataldo Monteleone", "adulti": 2, "bambini": 0, "checkin": "2025-06-19", "checkout": "2025-06-20", "stato": "OK"},
+        {"nome": "Janaka Bellana Vithanage", "adulti": 2, "bambini": 1, "eta_bambini": [2], "checkin": "2025-06-20", "checkout": "2025-06-26", "stato": "OK"},
+        {"nome": "Marino Tinelli", "adulti": 2, "bambini": 0, "checkin": "2025-06-26", "checkout": "2025-06-28", "stato": "OK"},
+        {"nome": "Federica Gatta", "adulti": 3, "bambini": 0, "checkin": "2025-06-28", "checkout": "2025-06-29", "stato": "OK"},
+        {"nome": "Giulia Ciot", "adulti": 2, "bambini": 0, "checkin": "2025-07-21", "checkout": "2025-07-22", "stato": "OK"}
+    ]
+    return bookings
 
-    for trimestre, importo in tabella_trimestri.items():
-        c.drawString(40, y, f"{trimestre}: {importo:.2f} €")
-        y -= 20
+def calcola_tassa_soggiorno(adulti, bambini, eta_bambini, notti, tariffa, max_notti, eta_min):
+    """Calcola la tassa di soggiorno per una prenotazione"""
+    # Adulti soggetti a tassa
+    adulti_tassabili = adulti
+    
+    # Bambini soggetti a tassa (solo quelli sopra l'età minima)
+    bambini_tassabili = 0
+    if bambini > 0 and eta_bambini:
+        bambini_tassabili = sum(1 for eta in eta_bambini if eta >= eta_min)
+    
+    # Totale persone tassabili
+    persone_tassabili = adulti_tassabili + bambini_tassabili
+    
+    # Notti soggette a tassa (massimo stabilito)
+    notti_tassabili = min(notti, max_notti)
+    
+    # Calcolo tassa totale
+    tassa_totale = persone_tassabili * notti_tassabili * tariffa
+    
+    return tassa_totale, persone_tassabili, notti_tassabili
 
-    y -= 30
-    c.setFont("Helvetica-Bold", 13)
-    c.drawString(40, y, "Dettaglio prenotazioni")
-    y -= 20
-    c.setFont("Helvetica", 9)
+# Layout principale
+col1, col2 = st.columns([2, 1])
 
-    cols = ["Nome ospite(i)", "Arrivo", "Partenza", "Durata (notti)", "Persone", "Tassa di soggiorno (€)", "Trimestre"]
-
-    for _, row in risultato_df[cols].iterrows():
-        riga = f"{row['Nome ospite(i)']} | {row['Arrivo']} | {row['Partenza']} | {row['Durata (notti)']} notti | {row['Persone']} ospiti | €{row['Tassa di soggiorno (€)']:.2f} | {row['Trimestre']}"
-        c.drawString(40, y, riga)
-        y -= 12
-        if y < 60:
-            c.showPage()
-            y = height - 40
-
-    c.showPage()
-    c.save()
-    buffer.seek(0)
-    return buffer
-
-if uploaded_file:
-    try:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file, sep=";", encoding="latin1")
-        elif uploaded_file.name.endswith(".xlsx") or uploaded_file.name.endswith(".xls"):
-            df = pd.read_excel(uploaded_file)
-        elif uploaded_file.name.endswith(".pdf"):
-            with pdfplumber.open(uploaded_file) as pdf:
-                all_text = []
-                for page in pdf.pages:
-                    table = page.extract_table()
-                    if table:
-                        all_text.extend(table)
-            if not all_text or len(all_text) < 2:
-                raise ValueError("⚠️ Nessuna tabella trovata nel PDF.")
-            headers = all_text[0]
-            n_colonne = len(headers)
-            righe_valide = [r for r in all_text[1:] if len(r) == n_colonne]
-            df = pd.DataFrame(righe_valide, columns=headers)
-            df = mappa_colonne_pdf(df)
-        else:
-            st.error("❌ Formato file non supportato.")
-            st.stop()
-
-        richieste = ["Nome ospite(i)", "Arrivo", "Partenza", "Durata (notti)", "Persone", "Stato"]
-        mancanti = [col for col in richieste if col not in df.columns]
-        if mancanti:
-            st.error(f"⚠️ Colonne mancanti nel file: {', '.join(mancanti)}")
-        else:
-            risultato = calcola_tassa(df)
-
-            st.success("✅ File caricato e analizzato con successo!")
-
-            st.subheader("📊 Riepilogo prenotazioni valide")
-            st.dataframe(risultato[[
-                "Nome ospite(i)", "Arrivo", "Partenza",
-                "Durata (notti)", "Persone", "Tassa di soggiorno (€)", "Trimestre"
-            ]])
-
-            st.subheader("📆 Totale per trimestre:")
-            tabella_trimestri = risultato.groupby("Trimestre")["Tassa di soggiorno (€)"].sum()
-            st.table(tabella_trimestri)
-
-            st.subheader("💰 Totale complessivo:")
-            totale = risultato["Tassa di soggiorno (€)"].sum()
-            st.markdown(f"### **Totale da versare: {totale:.2f} €**")
-
-            st.download_button(
-                label="⬇️ Scarica riepilogo CSV",
-                data=genera_csv(risultato),
-                file_name="riepilogo_tassa_soggiorno.csv",
-                mime="text/csv"
+with col1:
+    st.header("📊 Calcolo Tasse di Soggiorno")
+    
+    # Carica e processa i dati
+    bookings = parse_booking_data()
+    
+    # Calcola le tasse per ogni prenotazione
+    risultati = []
+    totale_generale = 0
+    
+    for booking in bookings:
+        if booking["stato"] in ["OK", "Mancata presentazione"]:
+            checkin = datetime.strptime(booking["checkin"], "%Y-%m-%d")
+            checkout = datetime.strptime(booking["checkout"], "%Y-%m-%d")
+            notti = (checkout - checkin).days
+            
+            eta_bambini = booking.get("eta_bambini", [])
+            
+            tassa, persone_tassabili, notti_tassabili = calcola_tassa_soggiorno(
+                booking["adulti"], 
+                booking["bambini"], 
+                eta_bambini,
+                notti, 
+                tariffa_per_notte, 
+                max_notti_tassa, 
+                eta_minima
             )
+            
+            risultato = {
+                "Nome": booking["nome"],
+                "Check-in": booking["checkin"],
+                "Check-out": booking["checkout"],
+                "Adulti": booking["adulti"],
+                "Bambini": booking["bambini"],
+                "Notti": notti,
+                "Persone Tassabili": persone_tassabili,
+                "Notti Tassabili": notti_tassabili,
+                "Tassa (€)": round(tassa, 2),
+                "Stato": booking["stato"]
+            }
+            risultati.append(risultato)
+            
+            if booking["stato"] == "OK":
+                totale_generale += tassa
+    
+    # Crea DataFrame
+    df = pd.DataFrame(risultati)
+    
+    # Mostra la tabella
+    if not df.empty:
+        st.dataframe(
+            df,
+            use_container_width=True,
+            column_config={
+                "Tassa (€)": st.column_config.NumberColumn(
+                    "Tassa (€)",
+                    format="€%.2f"
+                )
+            }
+        )
+        
+        # Bottone per scaricare CSV
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="📥 Scarica report CSV",
+            data=csv,
+            file_name=f"tasse_soggiorno_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
 
-            st.download_button(
-                label="⬇️ Scarica riepilogo PDF",
-                data=genera_pdf(risultato, totale, tabella_trimestri.to_dict()),
-                file_name="riepilogo_tassa_soggiorno.pdf",
-                mime="application/pdf"
+with col2:
+    st.header("💰 Riepilogo")
+    
+    if 'df' in locals() and not df.empty:
+        # Statistiche generali
+        prenotazioni_confermate = len(df[df["Stato"] == "OK"])
+        prenotazioni_totali = len(df)
+        notti_totali = df[df["Stato"] == "OK"]["Notti"].sum()
+        
+        # Metriche principali
+        st.metric("Tassa Totale da Riscuotere", f"€{totale_generale:.2f}")
+        st.metric("Prenotazioni Confermate", f"{prenotazioni_confermate}")
+        st.metric("Notti Totali", f"{notti_totali}")
+        
+        st.markdown("---")
+        
+        # Riepilogo per mese
+        st.subheader("📅 Riepilogo Mensile")
+        
+        df_ok = df[df["Stato"] == "OK"].copy()
+        if not df_ok.empty:
+            df_ok["Mese"] = pd.to_datetime(df_ok["Check-in"]).dt.strftime("%Y-%m")
+            riepilogo_mensile = df_ok.groupby("Mese").agg({
+                "Tassa (€)": "sum",
+                "Nome": "count"
+            }).rename(columns={"Nome": "Prenotazioni"})
+            
+            st.dataframe(
+                riepilogo_mensile,
+                column_config={
+                    "Tassa (€)": st.column_config.NumberColumn(
+                        "Tassa (€)",
+                        format="€%.2f"
+                    )
+                }
             )
+    
+    st.markdown("---")
+    st.info(
+        f"""
+        **Configurazione Attuale:**
+        - Tipo: {tipo_struttura}
+        - Tariffa: €{tariffa_per_notte}/notte/adulto
+        - Max notti tassabili: {max_notti_tassa}
+        - Età minima: {eta_minima} anni
+        """
+    )
 
-            st.divider()
-            st.markdown("""
-### 📌 Come pagare la tassa di soggiorno a Roma
+# Footer
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: #666; font-size: 0.8em;'>
+    📍 Tasse di soggiorno calcolate secondo le tariffe del Comune di Roma<br>
+    ⚠️ Verificare sempre le tariffe ufficiali aggiornate
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
 
-1. Vai sul sito ufficiale del Comune di Roma: [https://www.comune.roma.it](https://www.comune.roma.it)
-2. Cerca "Portale Tassa di Soggiorno"
-3. Accedi con SPID o credenziali
-4. Vai alla sezione **"Dichiarazione trimestrale"**
-5. Inserisci i dati e **effettua il pagamento tramite PagoPA**
-
----
-
-### 🗓️ Scadenze trimestrali da ricordare:
-
-- **Q1** → Versamento entro **16 aprile**
-- **Q2** → Versamento entro **16 luglio**
-- **Q3** → Versamento entro **16 ottobre**
-- **Q4** → Versamento entro **16 gennaio**
-
-Consigliato: salva questo PDF o CSV per archiviazione.
-""")
-
-    except Exception as e:
-        st.error(f"❌ Errore durante l'elaborazione: {e}")
+# Note informative
+with st.expander("ℹ️ Informazioni sulla Tassa di Soggiorno"):
+    st.markdown("""
+    ### Tassa di Soggiorno - Roma
+    
+    **Chi deve pagare:**
+    - Tutti gli ospiti dai 10 anni in su
+    - Solo per soggiorni turistici (non per motivi di lavoro/studio/salute)
+    
+    **Durata:**
+    - Massimo 10 notti consecutive per persona
+    
+    **Tariffe 2024:**
+    - Strutture 5 stelle: €7,00/notte
+    - Strutture 4 stelle: €6,00/notte  
+    - Strutture 3 stelle: €4,00/notte
+    - Strutture 2 stelle: €3,00/notte
+    - Strutture 1 stella: €2,00/notte
+    - **Case vacanze/Appartamenti: €6,00/notte**
+    - B&B: €2,00/notte
+    
+    **Esenzioni:**
+    - Bambini sotto i 10 anni
+    - Soggiorni per motivi di salute, lavoro, studio
+    - Accompagnatori di disabili
+    """)
